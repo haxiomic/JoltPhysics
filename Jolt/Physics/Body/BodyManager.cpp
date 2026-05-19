@@ -13,6 +13,7 @@
 #include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
 #include <Jolt/Physics/SoftBody/SoftBodyShape.h>
 #include <Jolt/Physics/StateRecorder.h>
+#include <Jolt/Physics/StateRecorderImpl.h>
 #include <Jolt/Core/StringTools.h>
 #include <Jolt/Core/QuickSort.h>
 #ifdef JPH_DEBUG_RENDERER
@@ -786,7 +787,7 @@ void BodyManager::SaveState(StateRecorder &inStream, const StateRecorderFilter *
 	}
 }
 
-bool BodyManager::RestoreState(StateRecorder &inStream)
+bool BodyManager::RestoreState(StateRecorder &inStream, const StateRecorderFilter *inFilter)
 {
 	BodyIDVector bodies_to_activate, bodies_to_deactivate;
 
@@ -852,6 +853,21 @@ bool BodyManager::RestoreState(StateRecorder &inStream)
 				}
 				bool is_active;
 				inStream.Read(is_active);
+
+				// Partial re-simulation: if a filter rejects this body, it must NOT be modified, but the
+				// stream bytes MUST still be consumed exactly. Snapshot the live body to a scratch stream,
+				// let RestoreState consume the input stream, then restore the snapshot to revert. The
+				// activate/deactivate handling is also skipped so the body's active state is left untouched.
+				if (inFilter != nullptr && !inFilter->ShouldRestoreBody(body_id))
+				{
+					StateRecorderImpl scratch;
+					b->SaveState(scratch);
+					b->RestoreState(inStream); // consumes the stored bytes
+					scratch.Rewind();
+					b->RestoreState(scratch); // revert to the live (pre-restore) value
+					continue;
+				}
+
 				if (is_active != b->IsActive())
 				{
 					if (is_active)

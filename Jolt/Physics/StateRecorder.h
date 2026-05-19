@@ -97,6 +97,11 @@ public:
 	///@name Functions called during RestoreState
 	///@{
 
+	/// If the state of a specific body should be restored. When this returns false the body is left
+	/// untouched but the corresponding bytes are still consumed from the stream (partial re-simulation).
+	/// Note: only honored in non-validating restore mode.
+	virtual bool		ShouldRestoreBody([[maybe_unused]] const BodyID &inBodyID) const				{ return true; }
+
 	/// If the state of a specific contact should be restored
 	virtual bool		ShouldRestoreContact([[maybe_unused]] const BodyID &inBody1, [[maybe_unused]] const BodyID &inBody2) const { return true; }
 

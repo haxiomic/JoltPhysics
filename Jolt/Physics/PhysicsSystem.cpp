@@ -180,6 +180,9 @@ EPhysicsUpdateError PhysicsSystem::Update(float inDeltaTime, int inCollisionStep
 	JPH_ASSERT(inCollisionSteps > 0);
 	JPH_ASSERT(inDeltaTime >= 0.0f);
 
+	// Partial re-simulation: reset the per-Update dirty-island body readback at the start of every Update.
+	mDirtyIslandBodies.clear();
+
 	// Sync point for the broadphase. This will allow it to do clean up operations without having any mutexes locked yet.
 	mBroadPhase->FrameSync();
 
@@ -639,6 +642,24 @@ EPhysicsUpdateError PhysicsSystem::Update(float inDeltaTime, int inCollisionStep
 
 	// Clear the large island splitter
 	mLargeIslandSplitter.Reset(inTempAllocator);
+
+	// Partial re-simulation: the island layout is about to be destroyed by ResetIslands. While it is
+	// still valid, and if a per-body dirty set is active, record the bodies of every ACTIVE island so
+	// a caller can read (via GetDirtyIslandBodies) the full set of bodies that ended up dirty this
+	// Update (contamination growth). Deterministic: fixed island/body iteration order, no FP.
+	if (mDirtyBodiesActive)
+	{
+		uint32 num_islands = mIslandBuilder.GetNumIslands();
+		for (uint32 island_idx = 0; island_idx < num_islands; ++island_idx)
+		{
+			if (mActiveIslandMask != nullptr && mActiveIslandMask[island_idx] == 0)
+				continue;
+			BodyID *bodies_begin, *bodies_end;
+			mIslandBuilder.GetBodiesInIsland(island_idx, bodies_begin, bodies_end);
+			for (const BodyID *body = bodies_begin; body < bodies_end; ++body)
+				mDirtyIslandBodies.push_back(*body);
+		}
+	}
 
 	// Clear the island builder
 	mIslandBuilder.ResetIslands(inTempAllocator);
@@ -1361,6 +1382,33 @@ void PhysicsSystem::ProcessBodyPair(ContactAllocator &ioContactAllocator, const 
 	}
 }
 
+void PhysicsSystem::SetDirtyBodies(const BodyID *inBodies, uint32 inCount)
+{
+	// Size the bitset to cover the whole body table (1 bit per body index).
+	uint32 max_bodies = max<uint32>(mBodyManager.GetMaxBodies(), 1);
+	mDirtyBodyBits.assign((max_bodies + 7) / 8, uint8(0));
+
+	for (uint32 i = 0; i < inCount; ++i)
+	{
+		uint32 idx = inBodies[i].GetIndex();
+		if (idx < max_bodies)
+			mDirtyBodyBits[idx >> 3] |= uint8(1u << (idx & 7));
+	}
+
+	mDirtyBodiesActive = true;
+}
+
+void PhysicsSystem::ClearDirtyBodies()
+{
+	mDirtyBodiesActive = false;
+	mDirtyBodyBits.clear();
+	// If the active-island mask still points into our derived buffer, drop it so a stale
+	// pointer is never consumed by a later Update. Restore full simulation.
+	if (mActiveIslandMask == mDirtyIslandMask.data())
+		mActiveIslandMask = nullptr;
+	mDirtyIslandMask.clear();
+}
+
 void PhysicsSystem::JobFinalizeIslands(PhysicsUpdateContext *ioContext)
 {
 #ifdef JPH_ENABLE_ASSERTS
@@ -1370,6 +1418,36 @@ void PhysicsSystem::JobFinalizeIslands(PhysicsUpdateContext *ioContext)
 
 	// Finish collecting the islands, at this point the active body list doesn't change so it's safe to access
 	mIslandBuilder.Finalize(mBodyManager.GetActiveBodiesUnsafe(EBodyType::RigidBody), mBodyManager.GetNumActiveBodies(EBodyType::RigidBody), mContactManager.GetNumConstraints(), ioContext->mTempAllocator);
+
+	// Partial re-simulation: when a per-body dirty set is active it OVERRIDES the per-island
+	// SetActiveIslandMask. The island layout is now valid (after Finalize) but does not yet exist
+	// outside of this Update, so derive the active-island mask here, before the solve jobs read it.
+	// An island is active iff any body in it has its dirty bit set. Deterministic: fixed iteration
+	// order over islands and bodies, no floating point.
+	if (mDirtyBodiesActive)
+	{
+		uint32 num_islands = mIslandBuilder.GetNumIslands();
+		mDirtyIslandMask.assign(num_islands, uint8(0));
+
+		uint32 max_bodies = (uint32)mDirtyBodyBits.size() * 8;
+		for (uint32 island_idx = 0; island_idx < num_islands; ++island_idx)
+		{
+			BodyID *bodies_begin, *bodies_end;
+			mIslandBuilder.GetBodiesInIsland(island_idx, bodies_begin, bodies_end);
+			for (const BodyID *body = bodies_begin; body < bodies_end; ++body)
+			{
+				uint32 idx = body->GetIndex();
+				if (idx < max_bodies && (mDirtyBodyBits[idx >> 3] & uint8(1u << (idx & 7))) != 0)
+				{
+					mDirtyIslandMask[island_idx] = 1;
+					break;
+				}
+			}
+		}
+
+		// Drive the existing v1 solve/integrate gate from the derived mask.
+		mActiveIslandMask = num_islands > 0? mDirtyIslandMask.data() : nullptr;
+	}
 
 	// Prepare the large island splitter
 	if (mPhysicsSettings.mUseLargeIslandSplitter)
@@ -2902,7 +2980,7 @@ bool PhysicsSystem::RestoreState(StateRecorder &inStream, const StateRecorderFil
 
 	if (uint8(state) & uint8(EStateRecorderState::Bodies))
 	{
-		if (!mBodyManager.RestoreState(inStream))
+		if (!mBodyManager.RestoreState(inStream, inFilter))
 			return false;
 
 		// Update bounding boxes for all bodies in the broadphase

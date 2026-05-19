@@ -210,7 +210,9 @@ public:
 	void							SaveState(StateRecorder &inStream, const StateRecorderFilter *inFilter) const;
 
 	/// Restoring state for replay. Returns false if failed.
-	bool							RestoreState(StateRecorder &inStream);
+	/// When inFilter is non-null its ShouldRestoreBody is consulted (non-validating mode only): bodies for
+	/// which it returns false are left untouched while their stream bytes are still consumed.
+	bool							RestoreState(StateRecorder &inStream, const StateRecorderFilter *inFilter = nullptr);
 
 	/// Save the state of a single body for replay
 	void							SaveBodyState(const Body &inBody, StateRecorder &inStream) const;

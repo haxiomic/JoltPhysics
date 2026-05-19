@@ -178,6 +178,21 @@ public:
 	void						SetActiveIslandMask(const uint8 *inMask)					{ mActiveIslandMask = inMask; }
 	const uint8 *				GetActiveIslandMask() const									{ return mActiveIslandMask; }
 
+	/// Advanced use only: partial re-simulation support (per-body dirty set).
+	/// Stores a set of "dirty" bodies. When a dirty set is active it OVERRIDES the per-island
+	/// SetActiveIslandMask: during Update, after the islands are finalized, the active-island mask
+	/// is derived such that an island is active iff it contains at least one dirty body. Bodies in
+	/// non-dirty islands are then skipped by the existing solve/integrate gate. When the dirty set
+	/// is empty AND no SetActiveIslandMask is set, behavior is bit-identical to upstream.
+	/// The body IDs are copied; the caller need not keep inBodies alive.
+	void						SetDirtyBodies(const BodyID *inBodies, uint32 inCount);
+	void						ClearDirtyBodies();
+
+	/// Advanced use only: partial re-simulation support (contamination readback).
+	/// After an Update in which a dirty-body set was active, returns the full set of bodies that
+	/// ended up in an active (dirty) island during that Update. Cleared at the start of each Update.
+	const Array<BodyID> &		GetDirtyIslandBodies() const								{ return mDirtyIslandBodies; }
+
 	/// Saving state for replay
 	void						SaveState(StateRecorder &inStream, EStateRecorderState inState = EStateRecorderState::All, const StateRecorderFilter *inFilter = nullptr) const;
 
@@ -391,6 +406,18 @@ private:
 	/// Advanced use only: partial re-simulation. When non-null, islands whose mask byte is zero
 	/// are skipped during velocity solve, position solve and integration. Null = full simulation.
 	const uint8 *				mActiveIslandMask = nullptr;
+
+	/// Advanced use only: partial re-simulation (per-body dirty set). When mDirtyBodiesActive is true,
+	/// mDirtyBodyBits is a per-body-table bitset (1 bit per BodyID index) of "dirty" bodies. During
+	/// Update this is converted into a per-island active mask (stored in mDirtyIslandMask) which then
+	/// drives the existing solve/integrate gate, overriding mActiveIslandMask.
+	bool						mDirtyBodiesActive = false;
+	Array<uint8>				mDirtyBodyBits;										///< Per-body-index bitset (8 bodies/byte)
+	Array<uint8>				mDirtyIslandMask;									///< Per-island active mask derived each Update
+
+	/// Advanced use only: partial re-simulation. Bodies that ended up in an active (dirty) island
+	/// during the most recent Update with a dirty-body set active. Cleared at the start of each Update.
+	Array<BodyID>				mDirtyIslandBodies;
 
 	/// Will split large islands into smaller groups of bodies that can be processed in parallel
 	LargeIslandSplitter			mLargeIslandSplitter;
