@@ -161,6 +161,23 @@ public:
 	/// and data to solve the contacts between bodies. At the end of the Update call, all allocated memory will have been freed.
 	EPhysicsUpdateError			Update(float inDeltaTime, int inCollisionSteps, TempAllocator *inTempAllocator, JobSystem *inJobSystem);
 
+	/// Advanced use only: partial re-simulation support.
+	/// Access to the IslandBuilder. Valid only after JobFinalizeIslands has run during an Update
+	/// (e.g. from a job/listener); the island layout is rebuilt every Update.
+	const IslandBuilder &		GetIslandBuilder() const									{ return mIslandBuilder; }
+	IslandBuilder &				GetIslandBuilder()											{ return mIslandBuilder; }
+
+	/// Advanced use only: partial re-simulation support.
+	/// Set a per-Update "active island mask". When non-null, it must point to at least
+	/// IslandBuilder::GetNumIslands() bytes; islands whose byte is zero are skipped during the
+	/// velocity solve, position solve and integration (their bodies are NOT integrated and do
+	/// NOT change sleep state). When null (the default) behavior is identical to upstream.
+	/// The pointer must remain valid for the duration of the Update call. The mask is not
+	/// consumed/cleared; call SetActiveIslandMask(nullptr) to restore full simulation.
+	/// Determinism note: this only gates whole islands; it introduces no new sorting or RNG.
+	void						SetActiveIslandMask(const uint8 *inMask)					{ mActiveIslandMask = inMask; }
+	const uint8 *				GetActiveIslandMask() const									{ return mActiveIslandMask; }
+
 	/// Saving state for replay
 	void						SaveState(StateRecorder &inStream, EStateRecorderState inState = EStateRecorderState::All, const StateRecorderFilter *inFilter = nullptr) const;
 
@@ -370,6 +387,10 @@ private:
 
 	/// Keeps track of connected bodies and builds islands for multithreaded velocity/position update
 	IslandBuilder				mIslandBuilder;
+
+	/// Advanced use only: partial re-simulation. When non-null, islands whose mask byte is zero
+	/// are skipped during velocity solve, position solve and integration. Null = full simulation.
+	const uint8 *				mActiveIslandMask = nullptr;
 
 	/// Will split large islands into smaller groups of bodies that can be processed in parallel
 	LargeIslandSplitter			mLargeIslandSplitter;

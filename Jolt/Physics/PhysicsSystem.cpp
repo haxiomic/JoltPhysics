@@ -1502,6 +1502,15 @@ void PhysicsSystem::JobSolveVelocityConstraints(PhysicsUpdateContext *ioContext,
 				continue;
 			}
 
+			// Partial re-simulation: skip the velocity solve for islands not flagged active.
+			// Position steps default to 0 for skipped islands so JobSolvePositionConstraints
+			// also performs no work on them, and their bodies are not integrated.
+			if (mActiveIslandMask != nullptr && mActiveIslandMask[island_idx] == 0)
+			{
+				mIslandBuilder.SetNumPositionSteps(island_idx, 0);
+				continue;
+			}
+
 		#ifdef JPH_TRACK_SIMULATION_STATS
 			uint64 start_tick = GetProcessorTickCount();
 		#endif
@@ -1636,6 +1645,24 @@ void PhysicsSystem::JobIntegrateVelocity(const PhysicsUpdateContext *ioContext, 
 			BodyID body_id = active_bodies[active_body_idx];
 			Body &body = mBodyManager.GetBody(body_id);
 			MotionProperties *mp = body.GetMotionProperties();
+
+			// Partial re-simulation: do not integrate bodies whose island is not flagged active.
+			// Bodies that are not part of any island (island index == cInactiveIndex) are always
+			// integrated, matching the mask-is-null behavior. Mark them as not requiring a CCD
+			// body so the active-body -> CCD-body mapping stays consistent for skipped bodies.
+			if (mActiveIslandMask != nullptr)
+			{
+				uint32 island_idx = mp->GetIslandIndexInternal();
+				if (island_idx != MotionProperties::cInactiveIndex && mActiveIslandMask[island_idx] == 0)
+				{
+					// Only bodies present during FindCollisions have a slot in the CCD mapping;
+					// a skipped (non-integrated) body never needs a CCD cast anyway.
+					if (active_body_idx < uint32(ioStep->mNumActiveBodyToCCDBody))
+						ioStep->mActiveBodyToCCDBody[active_body_idx] = -1;
+					active_body_idx++;
+					continue;
+				}
+			}
 
 			JPH_DET_LOG("JobIntegrateVelocity: id: " << body_id << " v: " << body.GetLinearVelocity() << " w: " << body.GetAngularVelocity());
 
@@ -2567,6 +2594,12 @@ void PhysicsSystem::JobSolvePositionConstraints(PhysicsUpdateContext *ioContext,
 			}
 
 			JPH_PROFILE("Island");
+
+			// Partial re-simulation: skip the position solve, bounds update and sleep check for
+			// islands not flagged active. Their bodies were never integrated this Update, so their
+			// bounds are unchanged and their sleep state must be left untouched.
+			if (mActiveIslandMask != nullptr && mActiveIslandMask[island_idx] == 0)
+				continue;
 
 			// Get iterators for this island
 			uint32 *constraints_begin, *constraints_end, *contacts_begin, *contacts_end;
