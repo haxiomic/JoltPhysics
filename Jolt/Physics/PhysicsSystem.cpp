@@ -1386,7 +1386,8 @@ void PhysicsSystem::SetDirtyBodies(const BodyID *inBodies, uint32 inCount)
 {
 	// Size the bitset to cover the whole body table (1 bit per body index).
 	uint32 max_bodies = max<uint32>(mBodyManager.GetMaxBodies(), 1);
-	mDirtyBodyBits.assign((max_bodies + 7) / 8, uint8(0));
+	mDirtyBodyBits.clear();
+	mDirtyBodyBits.resize((max_bodies + 7) / 8, uint8(0));
 
 	for (uint32 i = 0; i < inCount; ++i)
 	{
@@ -1427,7 +1428,8 @@ void PhysicsSystem::JobFinalizeIslands(PhysicsUpdateContext *ioContext)
 	if (mDirtyBodiesActive)
 	{
 		uint32 num_islands = mIslandBuilder.GetNumIslands();
-		mDirtyIslandMask.assign(num_islands, uint8(0));
+		mDirtyIslandMask.clear();
+		mDirtyIslandMask.resize(num_islands, uint8(0));
 
 		uint32 max_bodies = (uint32)mDirtyBodyBits.size() * 8;
 		for (uint32 island_idx = 0; island_idx < num_islands; ++island_idx)
